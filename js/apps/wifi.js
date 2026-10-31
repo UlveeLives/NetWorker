@@ -70,7 +70,7 @@ function syncIn(){
   const b = B(), W = wset(b), n = b.floors.length;
   // the site plan («Çevrə») comes last, after the lowest floor; it is not stacked with the floors (no signal through it)
   const floors = b.floors.slice().reverse().concat([siteOf(b)]).map((sf, i) => { const p = sf.plan;
-    return {id:sf.id, name:sf.name, desc:p.desc || "", color:p.color || (sf.id === OUT_FLOOR ? "green" : Object.keys(FC)[(n - 1 - i) % 6]), wm:clamp(num(p.wm, 40), 2, 2000), hm:clamp(num(p.hm, 14), 2, Math.min(2000, clamp(num(p.wm, 40), 2, 2000) * 20)),   /* depth ≤ 20 × width: the plan canvas stays drawable */ img:p.img || null, op:p.op ?? 60, idf:p.idf || null,
+    return {id:sf.id, name:sf.name, desc:p.desc || "", color:p.color || (sf.id === OUT_FLOOR ? "green" : Object.keys(FC)[(n - 1 - i) % 6]), wm:clamp(num(p.wm, 40), 2, 2000), hm:clamp(num(p.hm, 14), 2, Math.min(2000, clamp(num(p.wm, 40), 2, 2000) * 20)),   /* depth ≤ 20 × width: the plan canvas stays drawable */ img:p.img || null, op:p.op ?? 60, idf:p.idf || null, ox:num(p.ox, 0), oy:num(p.oy, 0),
       walls:p.walls, survey:p.survey, calibrated:!!p.cal,
       rooms:b.rooms.filter(r => r.floor === sf.id && r.geo).map(r => { const o = {id:r.id, label:r.name, wall:r.wall || "drywall", users:num(r.users), x:num(r.geo.x), y:num(r.geo.y), w:num(r.geo.w, 1), h:num(r.geo.h, 1)};
         // outline and name position drawn from a DXF drawing (kept as they are; only x / y / w / h are edited here)
@@ -200,11 +200,13 @@ function apsFor(d, f, b){
   const fi = d.floors.indexOf(f), out = [];
   d.aps.forEach(a => { if (!radioOn(a, b)) return; const fj = d.floors.findIndex(x => x.id === a.floor); if (fj < 0 || apart(a.floor, f.id)) return; const k = Math.abs(fj - fi); if (k > 2) return;
     const h = num(a.h, 3), ch = d.cfg.clientH, dz = k === 0 ? h - ch : fj < fi ? k * d.cfg.floorH + h - ch : k * d.cfg.floorH - h + ch;
-    out.push({a, k, dz:Math.abs(dz), eirp:txOf(a, b) + gainOf(a, b), sp:rspan(a, b), w:b === "2.4" ? 20 : num(radio(a, b).w, 20)}); });
+    // floors lined up in the Building app: an AP on another floor stands where that floor lies under / over this one
+    const g = d.floors[fj], ox = k ? num(g.ox, 0) - num(f.ox, 0) : 0, oy = k ? num(g.oy, 0) - num(f.oy, 0) : 0;
+    out.push({a, k, ox, oy, dz:Math.abs(dz), eirp:txOf(a, b) + gainOf(a, b), sp:rspan(a, b), w:b === "2.4" ? 20 : num(radio(a, b).w, 20)}); });
   return out;
 }
 function sigAt(d, b, A, x, y, walls){
-  const dist = Math.max(1, Math.hypot(x - A.a.x, y - A.a.y, A.dz));
+  const dist = Math.max(1, Math.hypot(x - A.a.x - (A.ox || 0), y - A.a.y - (A.oy || 0), A.dz));
   let r = A.eirp + d.cfg.cg - fspl1(b) - 10 * d.cfg.n * Math.log10(dist);
   if (A.k) r -= A.k * num(d.cfg.fl[b], 18); else if (walls.length) r -= wallLoss(walls, A.a.x, A.a.y, x, y);
   return r;
@@ -212,7 +214,7 @@ function sigAt(d, b, A, x, y, walls){
 const HCACHE = new Map();
 function heat(d, f, b, step){
   const s = PW / f.wm, H = Math.round(f.hm * s), A = apsFor(d, f, b);
-  const key = JSON.stringify([b, step, f.wm, f.hm, f.rooms.map(r => [r.x, r.y, r.w, r.h, r.wall]), f.walls.map(w => [w.x1, w.y1, w.x2, w.y2, w.mat, w.kind, w.bend]), A.map(q => [q.a.id, q.a.x, q.a.y, q.k, q.dz, q.eirp, q.sp]), d.cfg.n, d.cfg.cg, d.cfg.fl[b]]);
+  const key = JSON.stringify([b, step, f.wm, f.hm, f.rooms.map(r => [r.x, r.y, r.w, r.h, r.wall]), f.walls.map(w => [w.x1, w.y1, w.x2, w.y2, w.mat, w.kind, w.bend]), A.map(q => [q.a.id, q.a.x, q.a.y, q.k, q.dz, q.eirp, q.sp, q.ox, q.oy]), d.cfg.n, d.cfg.cg, d.cfg.fl[b]]);
   if (HCACHE.has(key)) return HCACHE.get(key);
   // memory: at most ~4 million signal values per map (many APs on a huge floor get a coarser grid instead of a crash)
   while (Math.ceil(PW / step) * Math.ceil(H / step) * Math.max(1, A.length) > 4e6) step *= 1.4;

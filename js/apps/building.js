@@ -85,13 +85,28 @@ function labHit(r, g, s, x, y){ const fs = g.lx !== undefined ? clamp(s * .38, 9
 const SH_BLOCK = /^(wall|wallExt|window|door|column)(:f)?$/;
 // the blocking line pieces of a drawn shape in its own coordinates, read once per drawing (kept with the path list)
 const SHSEG = new WeakMap();
-function shapeSegs(sh, open){ const P = sh.p || [], C = SHSEG.get(P) || {}; if (C[+open]) return C[+open]; const L = [];
-  P.forEach(([k, d]) => { if (!SH_BLOCK.test(k) || (open && k === "door")) return; let st = null, prev = null;
+// the lines of a drawing piece that stop a camera: walls, windows, doors (unless open) and columns; «blocks the cameras» on the
+// piece's card makes every line of it count (sh.block = true) or none (false)
+function shapeSegs(sh, open){ const P = sh.p || [], all = sh.block === true, K = +open + (all ? 2 : 0), C = SHSEG.get(P) || {}; if (C[K]) return C[K]; const L = [];
+  P.forEach(([k, d]) => { if ((!all && !SH_BLOCK.test(k)) || (open && k === "door")) return; let st = null, prev = null;
     String(d).replace(/([MLZ])([^MLZ]*)/gi, (m, op, args) => { const v = args.trim().split(/[\s,]+/).filter(Boolean).map(Number), U = op.toUpperCase();
       if (U === "Z"){ if (prev && st && (prev[0] !== st[0] || prev[1] !== st[1])) L.push([prev[0], prev[1], st[0], st[1]]); prev = st; return ""; }
       for (let i = 0; i + 1 < v.length; i += 2){ const q = [v[i], v[i + 1]]; if (U === "M" && i === 0){ st = q; prev = q; } else { if (prev && (prev[0] !== q[0] || prev[1] !== q[1])) L.push([prev[0], prev[1], q[0], q[1]]); prev = q; } }
       return ""; }); });
-  C[+open] = L; SHSEG.set(P, C); return L; }
+  C[K] = L; SHSEG.set(P, C); return L; }
+// building outlines brought in from a landscape drawing: closed, solid (a camera outside does not see in, one inside not out)
+function camSolids(p){ const out = []; (p.shapes || []).forEach(sh => { if (!sh.solid || sh.block === false) return; const kx = sh.w / (sh.w0 || sh.w || 1), ky = sh.h / (sh.h0 || sh.h || 1), cx = sh.w / 2, cy = sh.h / 2, r = num(sh.rot) * Math.PI / 180, c = Math.cos(r), sn = Math.sin(r);
+    const T = (x, y) => { x = x * kx - cx; y = y * ky - cy; return [sh.x + cx + x * c - y * sn, sh.y + cy + x * sn + y * c]; };
+    sh.p.forEach(([k, d]) => { if (!SH_BLOCK.test(k)) return; String(d).split(/(?=M)/).forEach(part => { if (!/Z\s*$/i.test(part)) return; const v = (part.match(/-?\d*\.?\d+(?:e-?\d+)?/g) || []).map(Number), P = []; for (let i = 0; i + 1 < v.length; i += 2){ const q = T(v[i], v[i + 1]); P.push(q[0], q[1]); } if (P.length >= 6) out.push(P); }); }); });
+  return out; }
+const inPolyB = (P, x, y) => { let c = false; for (let i = 0, j = P.length - 2; i < P.length; j = i, i += 2){ const xi = P[i], yi = P[i + 1], xj = P[j], yj = P[j + 1]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; } return c; };
+// a camera fixed on a building wall drawn as one line: its view starts 15 cm off the wall, on the side it looks at
+// (outside for a camera looking out, inside for one looking into the garage), so the wall itself cuts the view
+function camOrigin(SOL, x, y, a){ let best = null;
+  SOL.forEach(P => { for (let i = 0, j = P.length - 2; i < P.length; j = i, i += 2){ const x1 = P[j], y1 = P[j + 1], ex = P[i] - x1, ey = P[i + 1] - y1, L2 = ex * ex + ey * ey; if (L2 < 1e-9) continue; const u = clamp(((x - x1) * ex + (y - y1) * ey) / L2, 0, 1), qx = x1 + ex * u, qy = y1 + ey * u, dd = Math.hypot(x - qx, y - qy);
+    if (dd < .6 && (!best || dd < best.d)){ const L = Math.sqrt(L2); let nx = ey / L, ny = -ex / L; if (inPolyB(P, qx + nx * .02, qy + ny * .02)){ nx = -nx; ny = -ny; } best = {d:dd, qx, qy, nx, ny, P}; } } });
+  if (!best) return {x, y}; const into = inPolyB(best.P, x + Math.cos(a), y + Math.sin(a)), k = into ? -.15 : .15;
+  return {x:best.qx + best.nx * k, y:best.qy + best.ny * k}; }
 function camObstacles(p){ const S = [], vec = !!(p.vec && (p.shapes || []).length);
   const push = (x1, y1, x2, y2, ext = 0) => { if (ext){ const L = Math.hypot(x2 - x1, y2 - y1) || 1, ex = (x2 - x1) / L * ext, ey = (y2 - y1) / L * ext; x1 -= ex; y1 -= ey; x2 += ex; y2 += ey; } S.push([x1, y1, x2, y2]); };
   if (vec) (p.shapes || []).forEach(sh => { const kx = sh.w / (sh.w0 || sh.w || 1), ky = sh.h / (sh.h0 || sh.h || 1), cx = sh.w / 2, cy = sh.h / 2, r = num(sh.rot) * Math.PI / 180, c = Math.cos(r), sn = Math.sin(r);
@@ -136,6 +151,10 @@ function planSvg(b, f, opts = {}){
       ${w > 70 ? `<text data-rlab="${r.id}" x="${x + 6}" y="${y + 28}" font-size="9.5" fill="#4b5262">${esc(area(r) + " m²" + (num(r.users) ? " · 👤" + num(r.users) : ""))}</text>` : ""}`}
       ${sum && w > 90 ? `<text x="${x + 6}" y="${y + hh - 6}" pointer-events="none" font-size="9" fill="${miss.length ? "#b3262f" : "#1f7a35"}">${esc(sum)}</text>` : ""}</g>`;
     if (on && !opts.print && !(HO && HO.lockRooms)) h += `<rect class="bres" data-res="room:${r.id}" x="${x + w - 7}" y="${y + hh - 7}" width="14" height="14" rx="3"/>`; });
+  // the floor below, faint, where it stands under this one (floors lined up by «Line up floors» / a DXF import)
+  if (S.ghost && !opts.print && !isSite(f)){ const k = b.floors.indexOf(f), fb = k > 0 ? b.floors[k - 1] : null, W2 = fb && fb.plan ? siteWalls(fb.plan) : null;
+    if (W2){ const ddx = num(fb.plan.ox, 0) - num(p.ox, 0), ddy = num(fb.plan.oy, 0) - num(p.oy, 0); let d = ""; W2.S.forEach(q => { d += `M${((q[0] + ddx) * s).toFixed(1)} ${((q[1] + ddy) * s).toFixed(1)}L${((q[2] + ddx) * s).toFixed(1)} ${((q[3] + ddy) * s).toFixed(1)}`; });
+      h += `<path d="${d}" stroke="#7c3aed" stroke-opacity=".45" stroke-width="2" fill="none" stroke-dasharray="6 3" pointer-events="none"/><text x="6" y="${(p.hm * s - 8).toFixed(0)}" font-size="11" fill="#7c3aed" font-weight="700">↧ ${esc(fb.name)}</text>`; } }
   if (vec) h += DRAW.shapesSvg(p, s, sel, opts.print);
   if (!drawn || vec) h += DRAW.wallsSvg(p, s, sel, opts.print);
   h += labs;
@@ -157,12 +176,12 @@ function planSvg(b, f, opts = {}){
   b.racks.filter(r => r.floor === f.id && r.pos).forEach(r => { const x = r.pos.x * s, y = r.pos.y * s, on = isSel("rack", r.id);
     h += `<g class="bdev" data-brack="${r.id}" transform="translate(${x} ${y})"><rect x="-10" y="-13" width="20" height="26" rx="2" fill="#232a33" stroke="${on ? "#ffb703" : "#fff"}" stroke-width="${on ? 3 : 1.2}"/><path d="M-6 -8h12M-6 -3h12M-6 2h12M-6 7h12" stroke="#7fd1ff" stroke-width="1.6"/>
       ${S.labels ? `<text y="24" font-size="9" font-weight="700" text-anchor="middle" fill="#1d2433" stroke="#fff" stroke-width="2.5" paint-order="stroke">${esc(r.name)}</text>` : ""}</g>`; });
-  const camsOn = (HO && HO.cams) || (opts.print && opts.cams) || S.cones, OBS = camsOn ? camGrid(camObstacles(p)) : null;
+  const camsOn = (HO && HO.cams) || (opts.print && opts.cams) || S.cones, OBS = camsOn ? camGrid(camObstacles(p)) : null, SOL = camsOn ? camSolids(p) : [];
   if (camsOn) b.devices.filter(d => d.kind === "camera" && devFloor(b, d) === f.id && posOf(d)).forEach(d => { const P0 = posOf(d), C = window.CCTV && CCTV.camCalc ? CCTV.camCalc(b, d) : {}, fov = clamp(num(C.fov, 90), 10, 360), Rm = clamp(num(C.dori && C.dori[1], 20), 3, 60), R = Rm * s, a = num(d.camera && d.camera.dir, 0) * Math.PI / 180, h2 = fov * Math.PI / 360;
-    const x = P0.x * s, y = P0.y * s, on = isSel("dev", d.id);
+    const x = P0.x * s, y = P0.y * s, on = isSel("dev", d.id), O = SOL.length ? camOrigin(SOL, P0.x, P0.y, a) : P0;
     // the view stops at walls, retaining walls and the plot boundary: rays every ~1° (shorter where something is in the way)
     const n = Math.max(24, Math.round(fov * 2)), pt = [];
-    for (let i = 0; i <= n; i++){ const t = a - h2 + 2 * h2 * i / n, dx = Math.cos(t), dy = Math.sin(t), L = rayGrid(OBS, P0.x, P0.y, dx, dy, Rm); pt.push(`${(x + dx * L * s).toFixed(1)} ${(y + dy * L * s).toFixed(1)}`); }
+    for (let i = 0; i <= n; i++){ const t = a - h2 + 2 * h2 * i / n, dx = Math.cos(t), dy = Math.sin(t), L = rayGrid(OBS, O.x, O.y, dx, dy, Rm); pt.push(`${((O.x + dx * L) * s).toFixed(1)} ${((O.y + dy * L) * s).toFixed(1)}`); }
     h += `<path d="${fov >= 359 ? "M" + pt.join("L") : `M${x} ${y}L` + pt.join("L")}Z" fill="rgba(255,183,3,${on ? .26 : .15})" stroke="#e0a400" stroke-width="${on ? 1.6 : 1}" stroke-linejoin="round" pointer-events="none"/>`;
     if (on && !opts.print){ const hx = x + R * .55 * Math.cos(a), hy = y + R * .55 * Math.sin(a); h += `<line x1="${x}" y1="${y}" x2="${hx}" y2="${hy}" stroke="#e0a400" stroke-width="1.5" stroke-dasharray="4 3" pointer-events="none"/><circle class="camrot" data-camrot="${d.id}" cx="${hx}" cy="${hy}" r="8" fill="#ffb703" stroke="#7a5600" stroke-width="1.5"><title>${esc(t("camRotate"))}</title></circle>`; } });
   b.devices.filter(d => devFloor(b, d) === f.id && posOf(d)).forEach(d => { const P0 = posOf(d), x = P0.x * s, y = P0.y * s, on = isSel("dev", d.id) || UI.multi.has("dev:" + d.id), pl = d.status === "planned", fade = HO && HO.kinds && !HO.kinds.includes(d.kind);
@@ -214,9 +233,9 @@ function palette(){
     ${DRAW.GROUPS.map(gr => `<details class="psec pdet"${(st().pdet || {})[gr] ? " open" : ""} data-bpdet="${gr}"><summary><h4>${esc(t("dw_grp_" + gr))}</h4></summary><div class="pgrid">${Object.keys(DRAW.SYM).filter(k => DRAW.SYM[k][2] === gr).map(k => P("item:" + k, itemName(k), DRAW.icon(k))).join("")}</div></details>`).join("")}
     <div class="psec"><h4>${esc(t("bd_devs"))}</h4><div class="pgrid">${expandKinds(DEVK).map(k => P("dev:" + k, variantName(k), svgI(variantIcon(k)))).join("")}${ukBtn("building")}${P("rack", t("k_rack") === "k_rack" ? "Rack" : t("k_rack"), svgI("rack"))}</div></div>
     ${unplaced.length ? `<div class="psec"><h4>${esc(t("bd_unplaced"))} <span class="cnt">${unplaced.length}</span></h4><div class="ulist">${unplaced.slice(0, 60).map(d => `<button class="ub${place === "put:" + d.id ? " on" : ""}" data-bput="${d.id}">${esc(devLabel(d))}${d.room ? ` <small class="muted">${esc(roomName(b, d.room))}</small>` : ""}</button>`).join("")}</div></div>` : ""}
-    <div class="psec"><h4>${esc(t("palView"))}</h4><label class="chk"><input type="checkbox" data-bopt="labels"${st().labels ? " checked" : ""}> ${esc(t("bd_labels"))}</label><label class="chk"><input type="checkbox" data-bopt="grid"${st().grid ? " checked" : ""}> ${esc(t("bd_grid"))}</label><label class="chk"><input type="checkbox" data-bopt="cones"${st().cones ? " checked" : ""}> ${esc(t("camCones"))}</label>${f.plan.img || f.plan.vec ? `<label class="chk"><input type="checkbox" data-bopt="outlines"${st().outlines ? " checked" : ""}> ${esc(t("dw_outlines"))}</label>` : ""}
+    <div class="psec"><h4>${esc(t("palView"))}</h4><label class="chk"><input type="checkbox" data-bopt="labels"${st().labels ? " checked" : ""}> ${esc(t("bd_labels"))}</label><label class="chk"><input type="checkbox" data-bopt="grid"${st().grid ? " checked" : ""}> ${esc(t("bd_grid"))}</label><label class="chk"><input type="checkbox" data-bopt="cones"${st().cones ? " checked" : ""}> ${esc(t("camCones"))}</label>${!isSite(f) && b.floors.indexOf(f) > 0 ? `<label class="chk" title="${esc(t("fa_ghostH"))}"><input type="checkbox" data-bopt="ghost"${st().ghost ? " checked" : ""}> ${esc(t("fa_ghost"))}</label>` : ""}${f.plan.img || f.plan.vec ? `<label class="chk"><input type="checkbox" data-bopt="outlines"${st().outlines ? " checked" : ""}> ${esc(t("dw_outlines"))}</label>` : ""}
       ${f.plan.img || (f.plan.shapes || []).length ? `<label class="chk"><input type="checkbox" data-bvec="1"${f.plan.vec ? " checked" : ""}> ✏ ${esc(t("dw_vec"))}</label>${f.plan.vec ? `<label class="chk" title="${esc(t("dw_moveRfH"))}"><input type="checkbox" data-bmoverf="1"${store.settings.moveRf !== false ? " checked" : ""}> ${esc(t("dw_moveRf"))}</label><p class="muted small">${esc(t("dw_moveRfH"))}</p><label class="fld"><span>${esc(t("dw_bgop"))}: ${num(f.plan.bgop, 0)}%</span><input type="range" min="0" max="100" step="5" value="${num(f.plan.bgop, 0)}" data-bbgop="1"></label>${(f.plan.shapes || []).length ? "" : `<p class="muted small">${esc(t("dw_vecNoPieces"))}</p>`}` : ""}` : ""}
-      <button class="btn small wfull" data-ba="wizard">🧭 ${esc(t("bd_wizard"))}</button><button class="btn small wfull" data-ba="dxf">📐 ${esc(t("dx_btn"))}</button>${isSite(f) ? `<button class="btn small wfull" data-ba="lndDxf" title="${esc(t("lx_btnH"))}">🌳 ${esc(t("lx_btn"))}</button>` : ""}
+      <button class="btn small wfull" data-ba="wizard">🧭 ${esc(t("bd_wizard"))}</button><button class="btn small wfull" data-ba="dxf">📐 ${esc(t("dx_btn"))}</button>${!isSite(f) && b.floors.length > 1 ? `<button class="btn small wfull" data-ba="alignFloors" title="${esc(t("fa_btnH"))}">⇅ ${esc(t("fa_btn"))}</button>` : ""}${isSite(f) ? `<button class="btn small wfull" data-ba="lndDxf" title="${esc(t("lx_btnH"))}">🌳 ${esc(t("lx_btn"))}</button>` : ""}
       ${isSite(f) && ((f.plan.shapes || []).some(o => o.k === "lnd") || (f.plan.items || []).some(o => o.src === "lnd")) ? `<div class="lbox small"><b>🌳 ${esc(t("lx_moveT"))}</b><p class="muted small">${esc(t("lx_moveH"))}</p>
         ${[[.1, "10 sm"], [1, "1 m"]].map(([d, l]) => `<div class="btns" style="gap:4px;margin:3px 0"><span class="muted small" style="width:38px">${l}</span>${[["←", -d, 0], ["→", d, 0], ["↑", 0, -d], ["↓", 0, d]].map(([a, x, y]) => `<button class="btn small ghost" data-ba="lndMv:${x},${y}">${a}</button>`).join("")}</div>`).join("")}
         <button class="btn small ghost wfull" data-ba="lndDel">🗑 ${esc(t("lx_del"))}</button></div>` : ""}</div>`;
@@ -321,6 +340,7 @@ function drawer(tab){
       <div class="two">${["x","y","w","h"].map(k => `<label class="fld"><span>${k === "w" ? esc(t("f_w")) : k === "h" ? esc(t("f_hgt")) : k.toUpperCase()} (m)</span><input data-f="o.${k}" type="text" inputmode="decimal" value="${esc(r2(o[k]))}"></label>`).join("")}</div>
       ${rotFld("o.rot", o.rot)}
       ${o.k === "rwall" ? `<label class="fld"><span>${esc(t("dw_pcRoom"))}</span><select data-f="o.room">${opt("", t("none"), o.room || "")}${roomsOf(b, f).map(r => opt(r.id, r.name, o.room || "")).join("")}</select></label><p class="muted small">${esc(t("dw_pcRoomH"))}</p>` : ""}
+      <label class="chk" title="${esc(t("dw_blockH"))}"><input type="checkbox" data-f="o.block"${(o.block !== undefined ? o.block : (o.p || []).some(([k]) => SH_BLOCK.test(k))) ? " checked" : ""}> 🧱 ${esc(t("dw_block"))}</label>
       ${(o.p || []).some(([k]) => k === "door") ? `<label class="chk" title="${esc(t("dw_openH"))}"><input type="checkbox" data-f="o.open"${o.open ? " checked" : ""}> 🚪 ${esc(t("dw_openSh"))}</label>` : ""}
       <p class="muted small">${esc(t("dw_pcHint"))}</p>
       <div class="btns">${o.w !== o.w0 || o.h !== o.h0 ? `<button class="btn" data-dr="bShReset">↺ ${esc(t("dw_pcReset"))}</button>` : ""}<button class="btn" data-dr="bSplit" title="${esc(t("dw_splitH"))}">✂ ${esc(t("dw_split"))}</button><button class="btn" data-dr="bDupShape">⧉ ${esc(t("duplicate"))}</button><button class="btn dan" data-dr="bDelShape">🗑 ${esc(t("delete"))}</button></div>`; }
@@ -356,6 +376,7 @@ function onField(path, v){
       else if (k === "x1" || k === "y1"){ const d = x - w[k], o = k === "x1" ? "x2" : "y2"; w[k] = r2(x); w[o] = r2(w[o] + d); } }); return; }
   if (s.type === "bshape"){ const f = curFloor(b), o = f && (f.plan.shapes || []).find(x => x.id === s.id); if (!o) return; const k = path.split(".")[1];
     if (k === "open") return edit(() => { if (v === true || v === "true" || v === "on") o.open = true; else delete o.open; });
+    if (k === "block") return edit(() => { o.block = v === true || v === "true" || v === "on"; });
     edit(() => { if (k === "room"){ o.room = v; return; } const x = num(String(v).replace(",", "."), NaN); if (!isFinite(x)) return; if (k === "rot") o.rot = ((x % 360) + 360) % 360; else if (k === "w" || k === "h") o[k] = Math.max(.05, r2(x)); else o[k] = r2(x); }); return; }
   if (s.type === "rack"){ const r = rackById(b, s.id); if (!r) return; edit(() => { const k = path.split(".")[1]; if (k === "name") r.name = String(v).trim() || r.name; else r.room = v; }); return; }
   if (s.type === "bfloor"){ const f = planFloor(b, s.id); if (!f) return; edit(() => { const k = path.split(".")[1]; if (k === "name") f.name = String(v).trim() || f.name; else if (k === "h") f.h = Math.max(2, n(v)); else if (k === "ext") f.plan.ext = clamp(n(v), 0, 500); else f.plan[k] = clamp(n(v), 2, 2000); }); }
@@ -573,6 +594,7 @@ async function act(k){
   if (k === "wizard") return wizard();
   if (k === "dxf") return dxfImport();
   if (k === "lndDxf") return siteDxfImport();
+  if (k === "alignFloors") return alignFloors();
   if (k.startsWith("lndMv:")){ const [dx, dy] = k.slice(6).split(",").map(Number), p = siteOf(b).plan;   // the whole landscape drawing together
     return edit(() => { (p.shapes || []).forEach(o => { if (o.k === "lnd"){ o.x = r2(o.x + dx); o.y = r2(o.y + dy); } }); (p.items || []).forEach(o => { if (o.src === "lnd"){ o.x = r2(o.x + dx); o.y = r2(o.y + dy); } }); }); }
   if (k === "lndDel"){ if (!await uiConfirm(t("lx_delQ"))) return; const p = siteOf(b).plan; return edit(() => { p.shapes = (p.shapes || []).filter(o => o.k !== "lnd"); p.items = (p.items || []).filter(o => o.src !== "lnd"); UI.sel = null; }); }
@@ -669,6 +691,25 @@ function wizard(){
 }
 
 /* ---------- DXF drawing → floors, rooms, walls, doors, windows, outlets ---------- */
+/* ---------- floors lined up over each other ---------- */
+// every floor keeps its own drawing; plan.ox / plan.oy say where it stands in the building (metres, the reference floor at 0, 0).
+// The ground floor (else the floor with most walls) is the reference; the others are lined up floor by floor going up and down
+// from it, each on the one next to it (exterior walls, columns, shafts and stairs stand over each other).
+function floorShifts(floors, linesOf){ const L = floors.map(linesOf), n = floors.length; if (n < 2) return null;
+  let ref = floors.findIndex(f => /zemin|zəmin|ground|giriş|giris|первый/i.test(f.name)); if (ref < 0) ref = floors.findIndex(f => num(f.lv, NaN) === 0); if (ref < 0 || !L[ref].length) ref = L.reduce((m, x, i) => x.length > L[m].length ? i : m, 0);
+  const out = floors.map(() => null); out[ref] = {dx:0, dy:0, f:1, ref:true};
+  const go = (i, j) => { if (!out[j] || !L[i].length || !L[j].length){ return; } const r = DXF.floorShift(L[i], L[j]); if (r) out[i] = {dx:r.dx + out[j].dx, dy:r.dy + out[j].dy, f:r.f}; };
+  for (let i = ref + 1; i < n; i++) go(i, out[i - 1] ? i - 1 : ref);
+  for (let i = ref - 1; i >= 0; i--) go(i, out[i + 1] ? i + 1 : ref);
+  return out; }
+async function alignFloors(){
+  const b = B(), F = b.floors.filter(f => f.plan); toast("⏳ " + t("fa_busy")); await new Promise(r => setTimeout(r, 60));
+  const R = floorShifts(F, f => { const w = siteWalls(f.plan); return w ? w.S : []; }); if (!R) return;
+  const ok = F.filter((f, i) => R[i] && !R[i].ref), bad = F.filter((f, i) => !R[i]);
+  if (!ok.length) return uiAlert(t("fa_none"));
+  if (!await uiConfirm(t("fa_q",{l:F.map((f, i) => R[i] ? `${f.name}: ${R[i].ref ? t("fa_ref") : `${R[i].dx >= 0 ? "+" : ""}${R[i].dx} m, ${R[i].dy >= 0 ? "+" : ""}${R[i].dy} m (${Math.round(R[i].f * 100)}%)`}` : `${f.name}: ${t("fa_no")}`).join("\n")}))) return;
+  edit(() => { F.forEach((f, i) => { if (R[i]){ f.plan.ox = R[i].dx; f.plan.oy = R[i].dy; } }); st().ghost = true; });
+  toast("✓ " + t("fa_done",{n:ok.length}) + (bad.length ? " · " + t("fa_skip",{l:bad.map(f => f.name).join(", ")}) : "")); }
 /* ---------- a landscape project (DXF) on the site plan ---------- */
 // building walls already on the site plan: their box and the distance from a point to the nearest one (1 m grid)
 function siteWalls(p){ const S = [], W = /^(wall|wallExt)(:f)?$/; let bb = null; const grow = (x, y) => { if (!bb) bb = [x, y, x, y]; else { bb[0] = Math.min(bb[0], x); bb[1] = Math.min(bb[1], y); bb[2] = Math.max(bb[2], x); bb[3] = Math.max(bb[3], y); } };
@@ -680,7 +721,7 @@ function siteWalls(p){ const S = [], W = /^(wall|wallExt)(:f)?$/; let bb = null;
   const G = new Map(); S.forEach((s, i) => { for (let gx = Math.floor(Math.min(s[0], s[2])); gx <= Math.floor(Math.max(s[0], s[2])); gx++) for (let gy = Math.floor(Math.min(s[1], s[3])); gy <= Math.floor(Math.max(s[1], s[3])); gy++){ const k = gx + "," + gy; (G.get(k) || G.set(k, []).get(k)).push(i); } });
   const near = (x, y) => { let d = Infinity; for (let gx = Math.floor(x) - 1; gx <= Math.floor(x) + 1; gx++) for (let gy = Math.floor(y) - 1; gy <= Math.floor(y) + 1; gy++) (G.get(gx + "," + gy) || []).forEach(i => { const [x1, y1, x2, y2] = S[i], ex = x2 - x1, ey = y2 - y1, L2 = ex * ex + ey * ey || 1e-9, u = clamp(((x - x1) * ex + (y - y1) * ey) / L2, 0, 1); d = Math.min(d, Math.hypot(x - x1 - ex * u, y - y1 - ey * u)); }); return d; };
   const pts = []; S.forEach(q => pts.push(q[0], q[1], q[2], q[3]));
-  return {bb, near, pts}; }
+  return {bb, near, pts, S}; }
 async function siteDxfImport(){
   const b = B(), f = siteOf(b), p = f.plan;
   const file = await new Promise(res => { const i = document.createElement("input"); i.type = "file"; i.accept = ".dxf,.DXF"; i.onchange = () => res(i.files[0] || null); i.oncancel = () => res(null); i.click(); });
@@ -691,7 +732,7 @@ async function siteDxfImport(){
   try { doc = DXF.parse(DXF.decode(await file.arrayBuffer())); flat = DXF.flatten(doc); A = DXF.analyze(doc, flat); }
   catch(e){ console.error(e); return uiAlert(e.message === "binary" ? t("dx_binary") : t("dx_fail") + " " + e.message); }
   if (!flat.segs.length) return uiAlert(t("dx_empty"));
-  const LR = ["plant","light","water","road","edge","curb","pave","stair","furn","hard","other","ignore"];
+  const LR = ["wall","plant","light","water","road","edge","curb","pave","stair","furn","hard","other","ignore"];
   const S = {roles:{}, scale:A.scale, units:A.units, clip:true, replace:(p.shapes || []).some(o => o.k === "lnd") || (p.items || []).some(o => o.src === "lnd"), labels:true};
   A.layers.forEach(l => S.roles[l.name] = l.hidden ? "ignore" : DXF.lroleOf(l.name));
   // the floor whose pieces were copied onto the site plan (most identical pieces, one shift): the drawing is matched to that
@@ -701,8 +742,15 @@ async function siteDxfImport(){
     (p.shapes || []).forEach(o => { const q = m.get(sig(o)); if (!q) return; const k = (o.x - q.x).toFixed(1) + "," + (o.y - q.y).toFixed(1); V.set(k, (V.get(k) || 0) + 1); });
     const top = [...V.entries()].sort((x, y) => y[1] - x[1])[0]; if (top && top[1] >= 3 && (!base || top[1] > base.n)){ const [dx, dy] = top[0].split(",").map(Number); base = {f:fl, n:top[1], dx, dy}; } });
   const target = base ? siteWalls(base.f.plan) : siteWalls(p);
+  // building outlines in the drawing (house, garage …): kept as walls that block the cameras; the user can untick one (a pergola)
+  const outl = () => { S.out = DXF.wallOutlines(flat, S.roles, S.scale).filter(o => { if (!S.fit) return true; const q = S.fit.M(o.cx, o.cy); return q[0] > -5 && q[1] > -5 && q[0] < num(p.wm, 40) + 5 && q[1] < num(p.hm, 40) + 5; }); S.keep = S.keep || {}; S.out.forEach(o => { if (S.keep[o.i] === undefined) S.keep[o.i] = true; }); };
+  S.dropFloor = true;
+  const copies = () => { const all = new Set(); b.floors.forEach(fl => (fl.plan && fl.plan.shapes || []).forEach(o => all.add(sig(o)))); return (p.shapes || []).filter(o => o.k !== "lnd" && all.has(sig(o))); };
+  const outSvg = () => { if (!S.out.length) return ""; const bb = DXF.bbox(S.out.flatMap(o => DXF.bbox(o.s.p))), W = 520, k = W / Math.max(bb[2] - bb[0], bb[3] - bb[1]), H = Math.round((bb[3] - bb[1]) * k);
+    return `<svg viewBox="-8 -8 ${W + 16} ${H + 16}" width="100%" style="max-width:${W + 16}px;background:#fff;border-radius:8px">${S.out.map((o, n) => { let d = ""; for (let q = 0; q + 1 < o.s.p.length; q += 2) d += (q ? "L" : "M") + ((o.s.p[q] - bb[0]) * k).toFixed(1) + " " + ((bb[3] - o.s.p[q + 1]) * k).toFixed(1);
+      return `<path d="${d}Z" fill="${S.keep[o.i] ? "rgba(17,23,34,.12)" : "none"}" stroke="${S.keep[o.i] ? "#111722" : "#9aa1ad"}" stroke-width="${S.keep[o.i] ? 2.4 : 1.2}" stroke-dasharray="${S.keep[o.i] ? "" : "5 3"}"/><text x="${((o.cx - bb[0]) * k).toFixed(1)}" y="${((bb[3] - o.cy) * k + 5).toFixed(1)}" text-anchor="middle" font-size="14" font-weight="800" fill="#c2410c">${n + 1}</text>`; }).join("")}</svg>`; };
   const fit = () => { const r = DXF.siteFit(flat, S.scale, target); S.fit = r && base ? Object.assign(r, {M0:r.M, M:(X, Y) => { const q = r.M0(X, Y); return [q[0] + base.dx, q[1] + base.dy]; }, fl:base.f.name}) : r; };
-  fit();
+  fit(); outl();
   const draw = () => {
     const L = A.layers.filter(l => l.segs + l.texts > 0), cnt = r => L.filter(l => S.roles[l.name] === r).length;
     modal(`<h3>🌳 ${esc(t("lx_title"))} <small class="muted">${esc(file.name)}</small></h3>
@@ -710,18 +758,22 @@ async function siteDxfImport(){
       <div class="lbox">${S.fit ? `✅ ${esc(t("lx_fitOk",{l:S.fit.L, p:Math.round(S.fit.score * 100)}) + (S.fit.fl ? " (" + S.fit.fl + ")" : ""))}<br><small class="muted">${esc(t("lx_fitTune"))}</small>` : `⚠ ${esc(target ? t("lx_fitNo") : t("lx_fitNoWalls"))}`}</div>
       <div class="two"><label class="fld"><span>${esc(t("dx_units"))}</span><select id="lx-u">${Object.values(DXF.UNITS).map(([u, k]) => opt(u, u + " (1 = " + k + " m)", S.units)).join("")}</select></label><span></span></div>
       ${S.fit ? `<label class="chk"><input type="checkbox" id="lx-clip"${S.clip ? " checked" : ""}> ${esc(t("lx_clip"))}</label>` : ""}
+      ${S.out.length ? `<div class="lbox"><b>🏠 ${esc(t("lx_outT"))}</b><p class="muted small">${esc(t("lx_outH"))}</p>${outSvg()}
+        <div class="btns" style="gap:10px;flex-wrap:wrap">${S.out.map((o, n) => `<label class="chk"><input type="checkbox" data-lxo="${o.i}"${S.keep[o.i] ? " checked" : ""}> <b>${n + 1}</b> · ${esc(o.w + " × " + o.h + " m")}</label>`).join("")}</div>
+        ${copies().length ? `<label class="chk"><input type="checkbox" id="lx-dropFloor"${S.dropFloor ? " checked" : ""}> ${esc(t("lx_dropFloor",{n:copies().length}))}</label>` : ""}</div>` : ""}
       <label class="chk"><input type="checkbox" id="lx-labels"${S.labels ? " checked" : ""}> ${esc(t("lx_labels"))}</label>
       ${(p.shapes || []).some(o => o.k === "lnd") || (p.items || []).some(o => o.src === "lnd") ? `<label class="chk"><input type="checkbox" id="lx-replace"${S.replace ? " checked" : ""}> ${esc(t("lx_replace"))}</label>` : ""}
       <details class="dsec" open><summary>🗂 ${esc(t("dx_layers"))} <span class="cnt">${L.length}</span> <small class="muted">${esc(["plant","light","pave","hard","ignore"].map(r => t("lxr_" + r) + " " + cnt(r)).join(" · "))}</small></summary>
         <div class="dsb scroll" style="max-height:38vh"><p class="muted small">${esc(t("lx_layersH"))}</p><table class="t">${L.map(l => `<tr><td>${esc(l.name)}${l.hidden ? ` <small class="muted">(${esc(t("dx_hid"))})</small>` : ""}</td><td class="c small">${l.segs || ""}</td><td class="c small">${l.texts ? "T" + l.texts : ""}</td><td><select data-lxr="${esc(l.name)}">${LR.map(r => opt(r, t("lxr_" + r), S.roles[l.name])).join("")}</select></td></tr>`).join("")}</table></div></details>
       <div class="mfoot"><button class="btn" data-m="close">${esc(t("cancel"))}</button><span class="grow"></span><button class="btn pri" data-m="go">✓ ${esc(t("lx_go"))}</button></div>`,
       {go:() => { read(); create(); }}, {wide:true, nofocus:true});
-    $$("[data-lxr],#lx-u").forEach(el => el.addEventListener("change", () => { read(); if (el.id === "lx-u") fit(); draw(); }));
+    $$("[data-lxr],#lx-u,[data-lxo]").forEach(el => el.addEventListener("change", () => { read(); if (el.id === "lx-u") fit(); if (el.id === "lx-u" || el.dataset.lxr) outl(); draw(); }));
   };
   const read = () => {
     $$("[data-lxr]").forEach(el => S.roles[el.dataset.lxr] = el.value);
     const u = $("#lx-u"); if (u){ const U = Object.values(DXF.UNITS).find(x => x[0] === u.value); if (U){ S.units = U[0]; S.scale = U[1]; } }
-    ["clip","labels","replace"].forEach(k => { const c = $("#lx-" + k); if (c) S[k] = c.checked; });
+    ["clip","labels","replace","dropFloor"].forEach(k => { const c = $("#lx-" + k); if (c) S[k] = c.checked; });
+    $$("[data-lxo]").forEach(el => { S.keep[el.dataset.lxo] = el.checked; });
   };
   const create = async () => {
     closeModal(); toast("⏳ " + t("dx_building")); await new Promise(r => setTimeout(r, 60));
@@ -738,10 +790,13 @@ async function siteDxfImport(){
     const inPlot = plots.length ? (x, y) => plots.some(P => { let c = false, d = Infinity; for (let i = 0, j = P.length - 2; i < P.length; j = i, i += 2){ const xi = P[i], yi = P[i + 1], xj = P[j], yj = P[j + 1];
       if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; const ex = xi - xj, ey = yi - yj, L2 = ex * ex + ey * ey || 1e-9, u = clamp(((x - xj) * ex + (y - yj) * ey) / L2, 0, 1); d = Math.min(d, Math.hypot(x - xj - ex * u, y - yj - ey * u)); }
       return c || d < 1.5; }) : null;
-    const R = DXF.landscape(flat, {roles:S.roles, M, box, inPlot, clip:S.fit && S.clip ? S.fit.poly : null, scale:S.scale, skipText:s => names.has(s.toLocaleUpperCase("tr"))});
+    const solids = S.out.filter(o => S.keep[o.i]).map(o => o.s), drop = S.dropFloor && solids.length ? new Set(copies()) : null;
+    const R = DXF.landscape(flat, {roles:S.roles, M, box, inPlot, solids, clip:S.fit && S.clip ? S.fit.poly : null, scale:S.scale, skipText:s => names.has(s.toLocaleUpperCase("tr"))});
     if (!R.shapes.length && !R.labels.length) return uiAlert(t("lx_none"));
     edit(() => {
       if (S.replace){ p.shapes = (p.shapes || []).filter(o => o.k !== "lnd"); p.items = (p.items || []).filter(o => o.src !== "lnd"); }
+      // the floor's pieces copied onto the site plan give way to the building walls of the drawing
+      if (drop) p.shapes = (p.shapes || []).filter(o => !drop.has(o));
       if (grow){ p.wm = Math.max(num(p.wm, 0), grow[0]); p.hm = Math.max(num(p.hm, 0), grow[1]); }
       // landscape under the building pieces
       p.shapes = R.shapes.map(o => Object.assign(o, {id:uid("s")})).concat(p.shapes || []); p.vec = true; if (p.bgop === undefined) p.bgop = 0;
@@ -762,7 +817,7 @@ async function dxfImport(){
   try { doc = DXF.parse(DXF.decode(await file.arrayBuffer())); flat = DXF.flatten(doc); A = DXF.analyze(doc, flat); }
   catch(e){ console.error(e); return uiAlert(e.message === "binary" ? t("dx_binary") : t("dx_fail") + " " + e.message); }
   if (!flat.segs.length) return uiAlert(t("dx_empty"));
-  const S = {roles:{}, kinds:{}, scale:A.scale, units:A.units, devs:true, req:true, walls:true, furn:true, F:[], mode:B().floors.length || B().devices.length ? "over" : "add"};
+  const S = {roles:{}, kinds:{}, scale:A.scale, units:A.units, devs:true, req:true, walls:true, furn:true, align:true, labels:true, F:[], mode:B().floors.length || B().devices.length ? "over" : "add"};
   A.layers.forEach(l => S.roles[l.name] = l.role); A.blocks.forEach(x => S.kinds[x.name] = x.kind);
   const ROLES = ["wallExt","wall","door","window","column","stair","area","roomName","site","furn","other","ignore"];
   const lvOf = n => { const x = String(n).toLocaleLowerCase("tr"); if (/bodrum|zirzəmi|zirzemi|basement|podval|подвал|цокол/.test(x)) return -1; if (/zemin|ground|giriş|giris|1-?ci mərtəbə|первый/.test(x)) return 0; if (/çatı|cati|roof|çardaq|cherdak/.test(x)) return 50; const m = x.match(/(\d+)/); return m ? +m[1] : null; };
@@ -782,6 +837,8 @@ async function dxfImport(){
       <div class="two"><label class="fld"><span>${esc(t("dx_units"))}</span><select id="dx-u">${Object.values(DXF.UNITS).map(([u, k]) => opt(u, u + " (1 = " + k + " m)", S.units)).join("")}</select></label><span></span></div>
       <label class="chk"><input type="checkbox" id="dx-walls"${S.walls ? " checked" : ""}> ${esc(t("dx_optWalls"))}</label>
       <label class="chk"><input type="checkbox" id="dx-furn"${S.furn ? " checked" : ""}> ${esc(t("dx_optFurn"))}</label>
+      ${S.F.filter(F => F.on).length > 1 ? `<label class="chk" title="${esc(t("fa_btnH"))}"><input type="checkbox" id="dx-align"${S.align ? " checked" : ""}> ⇅ ${esc(t("fa_opt"))}</label>` : ""}
+      <label class="chk"><input type="checkbox" id="dx-labels"${S.labels ? " checked" : ""}> ${esc(t("lx_labels"))}</label>
       ${A.blocks.length ? `<label class="chk"><input type="checkbox" id="dx-req"${S.req ? " checked" : ""}> ${esc(t("dx_optReq",{n:nOut}))}</label><label class="chk"><input type="checkbox" id="dx-devs"${S.devs ? " checked" : ""}> ${esc(t("dx_optDevs2"))}</label>
         <details class="dsec"><summary>🔌 ${esc(t("dx_blocks"))} <span class="cnt">${A.blocks.length}</span></summary><div class="dsb"><table class="t">${A.blocks.map(x => `<tr><td>${esc(x.name)}</td><td class="c">${x.n}</td><td>${kindSel(x)}</td></tr>`).join("")}</table></div></details>` : ""}
       <details class="dsec"><summary>🗂 ${esc(t("dx_layers"))} <span class="cnt">${A.layers.length}</span> <small class="muted">${esc(["wallExt","wall","door","window","roomName","area","site"].map(r => t("dxr_" + r) + " " + cnt(r)).join(" · "))}</small></summary>
@@ -795,7 +852,7 @@ async function dxfImport(){
     $$("[data-dxf]").forEach(el => { const [i, k] = el.dataset.dxf.split(":"), F = S.F[+i]; if (!F) return; if (k === "on") F.on = el.checked; else if (k === "lv") F.lv = Math.round(num(el.value, F.lv)); else F.name = el.value.trim() || F.name; });
     $$("[data-dxr]").forEach(el => S.roles[el.dataset.dxr] = el.value); $$("[data-dxk]").forEach(el => S.kinds[el.dataset.dxk] = el.value);
     const u = $("#dx-u"); if (u){ const U = Object.values(DXF.UNITS).find(x => x[0] === u.value); if (U){ S.units = U[0]; S.scale = U[1]; } }
-    ["walls","furn","req","devs"].forEach(k => { const c = $("#dx-" + k); if (c) S[k] = c.checked; });
+    ["walls","furn","req","devs","align","labels"].forEach(k => { const c = $("#dx-" + k); if (c) S[k] = c.checked; });
     const md = $('input[name="dx-mode"]:checked'); if (md) S.mode = md.value;
   };
   const create = async () => {
@@ -804,12 +861,17 @@ async function dxfImport(){
     const b = B(), out = [];
     for (const F of L){ const r = DXF.build(flat, {bb:F.g.bb, roles:Object.assign({}, S.roles, S.furn ? {} : Object.fromEntries(Object.entries(S.roles).filter(([, v]) => v === "furn").map(([k]) => [k, "ignore"]))), scale:S.scale, kinds:S.kinds});
       r.img = await putAsset(new Blob([r.svg], {type:"image/svg+xml"})); out.push([F, r]); }
+    // floors lined up over each other (each keeps its own drawing; plan.ox / oy say where it stands)
+    const SH = S.align && out.length > 1 ? floorShifts(out.map(([F, r]) => ({name:F.name, lv:F.lv, r})), x => (x.r.walls || []).map(w => [w.x1, w.y1, w.x2, w.y2])) : null;
     // the drawing as a building of its own: floors, rooms, outlets
     const src = {name:file.name, floors:[], rooms:[], devices:[]};
     out.forEach(([F, r]) => {
       const f = {id:uid("f"), name:F.name, lvl:F.lv, lv:F.lv, h:3.2}; f.plan = {wm:r.wm, hm:r.hm, img:r.img, op:100, cal:true, idf:null, walls:S.walls ? r.walls.map(w => Object.assign({id:uid("w"), src:"dxf"}, w)) : [], survey:[], items:[], src:{dxf:file.name}};
       // the drawing as editable pieces (the picture stays underneath, hidden, for comparison)
+      const k0 = out.findIndex(o => o[0] === F); if (SH && SH[k0]){ f.plan.ox = SH[k0].dx; f.plan.oy = SH[k0].dy; }
+      const LB = !S.labels ? [] : (r.labels || []).map(l => { const size = l.h > .3 ? 12 : 10, w = Math.round((l.text.length * size * .6 / clamp(1100 / Math.max(4, r.wm), 6, 70) + .2) * 100) / 100; return {id:uid("i"), type:"label", src:"dxf", x:Math.round((l.x - w / 2) * 100) / 100, y:Math.round((l.y - .4) * 100) / 100, w, h:.8, rot:l.rot || 0, text:l.text, size}; });
       if (r.pieces){ f.plan.vec = true; f.plan.bgop = 0; f.plan.items = r.pieces.boundaries.map(P => { const it = {id:uid("i"), type:"boundary", style:"yard", pts:P, rot:0, text:""}; DRAW.boundBox(it); return it; }); }
+      f.plan.items.push(...LB);
       const R = r.rooms.map(x => { const g = x.geo, room = {id:uid("r"), name:x.name, floor:f.id, users:0, wall:S.walls ? "none" : "drywall", type:guessType(x.name), req:{}, geo:{x:g.x, y:g.y, w:g.w, h:g.h}};
         if (g.poly){ room.geo.poly = g.poly.map((v, i) => Math.round((v - (i % 2 ? g.y : g.x)) * 100) / 100); room.geo.pw = g.w; room.geo.ph = g.h; room.geo.area = x.area; } else room.geo.est = true;
         room.geo.lx = g.lx; room.geo.ly = g.ly; return normRoom(room); });

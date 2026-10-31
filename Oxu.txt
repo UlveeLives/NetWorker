@@ -13,6 +13,16 @@ bir yerdə dəyişəndə o biri tətbiqlərdə də dəyişir.
    planlarına avtomatik uyğunlaşdırılır; hər blok (ağac, işıq, oturacaq…) ayrıca hissə olur; yazılar «Yazı» obyekti olur;
    binanın içi və hasardan uzaqdakı simvollar (leqenda) atılır; layer növləri təxmin edilir və dəyişdirilə bilir.
    «Landşaftı sürüşdür» düymələri (10 sm / 1 m) bütün landşaftı birlikdə düzəldir, «Landşaftı sil» hamısını silir.
+ - Landşaftda «Bina divarı (kameranı bağlayır)» növü: çertyojdakı bina konturları (ev, qaraj…) bina divarı olur, kameranın
+   görüntüsünü kəsir, içindəki xətlər/yazılar atılır (avtomobil, mebel kimi simvollar qalır). Pəncərədə tapılan konturlar
+   nömrələnmiş sxemlə göstərilir; bina olmayanı (pergole) işarədən çıxarmaq olur. Ərazi planına köçürülmüş mərtəbə hissələri
+   istəyə görə silinir. Divara bərkidilmiş kameranın görüntüsü divarın baxdığı tərəfindən başlayır.
+ - İstənilən çertyoj hissəsinin kartında «🧱 Kamera görüntüsünü kəsir» seçimi.
+ - DXF mərtəbə idxalı: mebel və santexnikada hər blok ayrıca hissədir; otaq adlarından başqa yazılar «Yazı» obyekti olur
+   (rəqəm, ölçü, hündürlük qeydləri gətirilmir).
+ - Mərtəbələr bina konturu (xarici divar, sütun, şaxta, pilləkən) ilə bir-birinə uyğunlaşdırılır: DXF idxalında avtomatik,
+   mövcud layihədə «⇅ Mərtəbələri üst-üstə uyğunlaşdır» düyməsi ilə. Çertyojlar dəyişmir, yalnız mərtəbələrin bir-birinə
+   nisbətən yeri yadda saxlanılır; Wi-Fi siqnalı mərtəbələr arası bununla hesablanır; «Aşağı mərtəbəni göstər» görünüşü.
  - Böyük planlarda tək hissəni və ya yazını sürüşdürmək indi səlis işləyir (bütün plan hər hərəkətdə yenidən çəkilmir).
  - Fon şəkli olmayan, yalnız çertyoj hissələrindən ibarət planda da «✏ Redaktə olunan çertyoj» seçimi görünür.
 

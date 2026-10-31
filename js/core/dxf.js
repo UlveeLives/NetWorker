@@ -81,8 +81,8 @@ function flatten(doc, opt = {}){
   const segs = [], texts = [], refs = [], LIM = opt.limit || 1500000; let pts = 0;
   // layers switched off or frozen are still read (an electrical drawing often freezes the architect's doors) and marked
   const hidden = l => { const x = doc.layers[l]; return !!(x && (x.off || x.frozen)); }, HN = {}, VN = {}, HID = {add:L => { HN[L] = 1; }};
-  let hid = false, TOP = -1, TINS = false;   // the top-level entity a piece comes from (one tree, one lamp … stays one piece)
-  const push = (L, M, P, closed) => { if (pts > LIM || P.length < 4) return; const W = new Array(P.length); for (let k = 0; k < P.length; k += 2){ const q = ap(M, P[k], P[k + 1]); W[k] = q[0]; W[k + 1] = q[1]; } pts += P.length / 2; segs.push({L, p:W, c:!!closed, h:hid, g:TOP, ins:TINS}); if (hid) HN[L] = 1; else VN[L] = 1; return W; };
+  let hid = false, TOP = -1, TINS = false, RID = 0; const CH = [];   // CH: the block references a piece sits in, outermost first   // the top-level entity a piece comes from (one tree, one lamp … stays one piece)
+  const push = (L, M, P, closed) => { if (pts > LIM || P.length < 4) return; const W = new Array(P.length); for (let k = 0; k < P.length; k += 2){ const q = ap(M, P[k], P[k + 1]); W[k] = q[0]; W[k + 1] = q[1]; } pts += P.length / 2; segs.push({L, p:W, c:!!closed, h:hid, g:TOP, ins:TINS, ch:CH.length ? CH.slice() : null}); if (hid) HN[L] = 1; else VN[L] = 1; return W; };
   function walk(list, M, inL, depth, box, inHid){
     for (const e of list){
       if (!depth){ TOP++; TINS = e.t === "INSERT"; }
@@ -119,7 +119,7 @@ function flatten(doc, opt = {}){
             const ox = cI * dc, oy = rI * dr, x = +g[10] + ox * Math.cos(rot) - oy * Math.sin(rot), y = +g[20] + ox * Math.sin(rot) + oy * Math.cos(rot);
             const T = [Math.cos(rot) * sx, Math.sin(rot) * sx, -Math.sin(rot) * sy, Math.cos(rot) * sy, x, y], Mb = mul(Mo, mul(T, [1, 0, 0, 1, -B.base[0], -B.base[1]]));
             const ref = {L, name:normLayer(g[2]), raw:g[2], depth, pts:[]}, s0 = segs.length;
-            const h0 = hid; walk(B.ents, Mb, L, depth + 1, ref.pts, h0); hid = h0;
+            const h0 = hid, rid = RID++; ref.id = rid; CH.push(rid); walk(B.ents, Mb, L, depth + 1, ref.pts, h0); CH.pop(); hid = h0;
             for (let k = s0; k < segs.length; k++){ const P = segs[k].p; for (let j = 0; j < P.length; j += 2) ref.pts.push(P[j], P[j + 1]); }
             const c = ap(Mb, B.base[0], B.base[1]); ref.x = c[0]; ref.y = c[1]; ref.rot = Math.atan2(Mb[1], Mb[0]); ref.bb = bbox(ref.pts); delete ref.pts;
             if (ref.bb) refs.push(ref);
@@ -305,16 +305,22 @@ ${gS("door", 'stroke="#a8641f" stroke-width=".04"')}
   for (let i = rooms.length - 1; i >= 0; i--){ const r = rooms[i]; if (r.exact) continue; const tw = rooms.find(o => o !== r && nk(o.name) === nk(r.name) && ov(o.geo, r.geo) > .5); if (tw) rooms.splice(i, 1); }
   // editable drawing: every wall line of a room (with its doors and windows) as one piece of that room; furniture, stairs,
   // columns and the yard in pieces of what touches; closed yard outlines as boundaries the user can reshape point by point
-  const pieces = opts.pieces === false ? null : piecesOf(S, rooms, tx, ty, sc, R);
-  return {svg, title:ftitles[0] || "", pieces, wm:Math.round(wm * 10) / 10, hm:Math.round(hm * 10) / 10, rooms, walls, outlets, doors:top.filter(r => R[r.L] === "door").length, windows:top.filter(r => R[r.L] === "window").length, site:!!sb};
+  const pieces = opts.pieces === false ? null : piecesOf(S, rooms, tx, ty, sc, R, objKey(flat, sc, 6));
+  // other writing on the plan (notes, equipment names, levels written as words): labels of their own; room names, numbers
+  // alone and codes are left out
+  const rn = new Set(rooms.map(r => r.name.toLocaleUpperCase("tr"))), labels = [];
+  flat.texts.forEach(t => { const r = R[t.L] || "other"; if (r === "roomName" || (r === "ignore" && !/yazı|yazi|text|note|label|^not\b/i.test(t.L)) || !inBox(BB, t.x, t.y)) return;
+    const s2 = String(t.s || "").replace(/\s+/g, " ").trim(); if (s2.length < 3 || s2.length > 80 || /^[\d\s.,:;+\-x×/%°'"()=±]+$/.test(s2) || /^[a-z]{1,3}\.[a-z]{1,3}/i.test(s2) || MEAS.test(s2) || rn.has(s2.toLocaleUpperCase("tr"))) return;
+    labels.push({x:Math.round(tx(t.x) * 100) / 100, y:Math.round(ty(t.y) * 100) / 100, text:s2, h:t.h * sc, rot:t.rot ? Math.round(-t.rot / D2R) : 0}); });
+  return {svg, title:ftitles[0] || "", pieces, labels, origin:[ox, oy], wm:Math.round(wm * 10) / 10, hm:Math.round(hm * 10) / 10, rooms, walls, outlets, doors:top.filter(r => R[r.L] === "door").length, windows:top.filter(r => R[r.L] === "window").length, site:!!sb};
 }
-function piecesOf(S, rooms, tx, ty, sc, R){
+function piecesOf(S, rooms, tx, ty, sc, R, OK){
   const rr = v => Math.round(v * 100) / 100, M = s => { const o = new Array(s.p.length); for (let k = 0; k < s.p.length; k += 2){ o[k] = tx(s.p[k]); o[k + 1] = ty(s.p[k + 1]); } return o; };
   const bbM = P => bbox(P), WALLR = {wall:1, wallExt:1, door:1, window:1};
   // units: {r:role, P:[x,y…] metres, c:closed}
   const units = []; S.forEach(s => { const r = R[s.L]; if (!r || r === "area") return; const P = M(s), b = bbM(P); if (!b) return;
     if (WALLR[r] && P.length > 4 && !(s.c && Math.max(b[2] - b[0], b[3] - b[1]) < 2.5)){ for (let k = 0; k + 3 < P.length; k += 2) units.push({r, P:[P[k], P[k + 1], P[k + 2], P[k + 3]], c:false}); }
-    else units.push({r, P, c:!!s.c}); });
+    else units.push({r, P, c:!!s.c, g:OK(s)}); });
   units.forEach(u => { u.b = bbM(u.P); u.cx = (u.b[0] + u.b[2]) / 2; u.cy = (u.b[1] + u.b[3]) / 2; });
   const roomOf = u => { let best = -1, ba = Infinity; rooms.forEach((rm, i) => { const g = rm.geo, m = .35; if (u.cx < g.x - m || u.cx > g.x + g.w + m || u.cy < g.y - m || u.cy > g.y + g.h + m) return; const a = g.w * g.h; if (a < ba){ ba = a; best = i; } }); return best; };
   const out = [], boundaries = [];
@@ -331,14 +337,17 @@ function piecesOf(S, rooms, tx, ty, sc, R){
       for (const j of a){ const c = L[j].b; if (b[0] - gap <= c[2] && c[0] - gap <= b[2] && b[1] - gap <= c[3] && c[1] - gap <= b[3]){ const x = find(i), y = find(j); if (x !== y) par[x] = y; } } a.push(i); } });
     const G = new Map(); L.forEach((u, i) => { const r = find(i); (G.get(r) || G.set(r, []).get(r)).push(u); }); return [...G.values()]; };
   groups(loose, .05).forEach(L => mk("wall", L));
-  ["furn", "stair", "column", "other"].forEach(r => groups(units.filter(u => u.r === r), .03).forEach(L => { const B = bbox(L.flatMap(u => u.b)); if (B && Math.max(B[2] - B[0], B[3] - B[1]) > 12) L.forEach(u => mk(r, [u])); else mk(r, L); }));
+  // furniture and fittings: every block (a bed, a WC, a sink) is a piece of its own; loose lines join what they touch
+  { const byG = new Map(); units.filter(u => u.r === "furn" && u.g >= 0).forEach(u => (byG.get(u.g) || byG.set(u.g, []).get(u.g)).push(u)); byG.forEach(L => mk("furn", L)); }
+  ["furn", "stair", "column", "other"].forEach(r => groups(units.filter(u => u.r === r && !(r === "furn" && u.g >= 0)), .03).forEach(L => { const B = bbox(L.flatMap(u => u.b)); if (B && Math.max(B[2] - B[0], B[3] - B[1]) > 12) L.forEach(u => mk(r, [u])); else mk(r, L); }));
   units.filter(u => u.r === "site").forEach(u => { if (u.c && u.P.length >= 8 && u.P.length <= 800){ const P = u.P.slice(0, -2).map(rr); boundaries.push(P); } else mk("site", [u]); });
   return {shapes:out, boundaries};
 }
 /* ---------- landscape (site plan) drawings ---------- */
 // role of a layer in a landscape / site drawing: what a piece is drawn as on the site plan (none of them block a camera)
 const LROLE_RX = [
-  ["ignore", /dim|ölçü|olcu|razmer|hatch|tarama|grid|axis|tblock|title|antet|vport|viewport|revcld|revision|defpoints|leader|lejant|legend|setout|conlin|drno|dynamic blocks|^0-txt|2-sps|elv|bemass|kot|level.?mark/i],
+  ["ignore", /dim|ölçü|olcu|razmer|hatch|tarama|grid|axis|tblock|title|antet|vport|viewport|revcld|revision|defpoints|leader|lejant|legend|setout|conlin|drno|dynamic blocks|^0-txt|_text$|^text$|2-sps|elv|bemass|kot|level.?mark/i],
+  ["wall", /A041E|build.?out|bina.?kontur|wall.?ext|ext.?wall|dış.?duvar|dis.?duvar|xarici.?divar|exterior.?wall|A210G/i],
   ["plant", /ntr|bitki|plant|tree|ağac|agac|ağaç|agaç|shrub|bush|\bkol\b|çalı|cali|çim|grass|lawn|veg|flora|hedge|çit.?bitki|palm/i],
   ["light", /lite|light|aydın|aydin|bollard|lamp|luminaire|lighting|işıq|isiq|armatür.?ayd/i],
   ["water", /pool|havuz|hovuz|water|fountain|şelale|selale|şəlalə|gölet|golet|pond/i],
@@ -357,6 +366,8 @@ function simp(P, tol){ const n = P.length / 2; if (n <= 2) return P; const keep 
     for (let i = a + 1; i < b; i++){ const px = P[i * 2] - ax, py = P[i * 2 + 1] - ay, d = L > 1e-9 ? Math.abs(px * dy - py * dx) / L : Math.hypot(px, py); if (d > dm){ dm = d; im = i; } }
     if (im > 0){ keep[im] = 1; st.push([a, im], [im, b]); } }
   const o = []; for (let i = 0; i < n; i++) if (keep[i]) o.push(P[i * 2], P[i * 2 + 1]); return o; }
+// heights and levels written as notes ("FL:260 cm", "H:70", "+3.20"): not labels
+const MEAS = /^[\p{L}]{0,4}\s*[:=]?\s*[+\-±]?[\d.,]+\s*(cm|mm|m|sm)?$/iu;
 const inPolyF = (H, x, y) => { let c = false; for (let i = 0, j = H.length - 2; i < H.length; j = i, i += 2){ const xi = H[i], yi = H[i + 1], xj = H[j], yj = H[j + 1]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; } return c; };
 /* Where the drawing sits on the site plan: the building outline drawn in the landscape file is matched against the
    building walls already on the site plan. Candidates are closed outlines of about the right size; each is tried with its
@@ -389,25 +400,36 @@ function siteFit(flat, scale, target){
    with what they touch on the same role (as in a floor plan). Heavy plant symbols are thinned so a large site stays quick.
    opts: {roles, M(X,Y)→[x,y] metres, clip: outline [X,Y …] whose inside is dropped (the building: drawn by its floors),
    box:[x0,y0,x1,y1] metres kept, skipText(s)}. Returns {shapes:[{k, x, y, w, h, w0, h0, rot, p}], labels:[{x, y, text, h, rot}]}. */
+// closed outlines on «building wall» layers: the building parts of the site (house, garage, a pergola …) for the user to confirm
+function wallOutlines(flat, roles, scale){ const out = [];
+  flat.segs.forEach((s, i) => { if (roles[s.L] !== "wall" || !s.c || s.p.length < 8) return; const b = bbox(s.p); if (!b) return; const w = (b[2] - b[0]) * scale, h = (b[3] - b[1]) * scale; if (w * h < 4) return;
+    out.push({i, s, L:s.L, w:Math.round(w * 10) / 10, h:Math.round(h * 10) / 10, cx:(b[0] + b[2]) / 2, cy:(b[1] + b[3]) / 2}); });
+  return out; }
 function landscape(flat, opts){
-  const R = opts.roles, M = opts.M, rr = v => Math.round(v * 100) / 100, box = opts.box, clip = opts.clip;
-  const inside = (X, Y) => clip && inPolyF(clip, X, Y);
+  const R = opts.roles, M = opts.M, rr = v => Math.round(v * 100) / 100, box = opts.box;
+  // the building: the outline the drawing was matched by, and the building outlines the user kept (their inside is drawn by the
+  // floors: only symbols — cars, furniture — are kept there, lines and writing are left out)
+  const solids = (opts.solids || []).map(s => s.p).concat(opts.clip ? [opts.clip] : []), solidSeg = new Set(opts.solids || []);
+  const inside = (X, Y) => solids.some(P => inPolyF(P, X, Y));
   const units = new Map();   // group key → [{r, P (metres), c}]
+  let nk = 0; const OK = objKey(flat, opts.scale || 1, 10);
   flat.segs.forEach(s => { const r = R[s.L] || "other"; if (r === "ignore") return; const P = s.p;
-    if (clip){ let all = true; for (let k = 0; k + 1 < P.length; k += 2) if (!inside(P[k], P[k + 1])){ all = false; break; } if (all) return; }
+    if (solids.length && !s.ins && !solidSeg.has(s) && !(r === "wall" && s.c)){ let all = true; for (let k = 0; k + 1 < P.length; k += 2) if (!inside(P[k], P[k + 1])){ all = false; break; } if (all) return; }
     const Q = new Array(P.length); let any = !box; for (let k = 0; k + 1 < P.length; k += 2){ const q = M(P[k], P[k + 1]); Q[k] = q[0]; Q[k + 1] = q[1]; if (!any && q[0] >= box[0] && q[0] <= box[2] && q[1] >= box[1] && q[1] <= box[3]) any = true; }
     if (!any) return;
-    const key = s.ins ? "i" + s.g : "l" + r; if (!units.has(key)) units.set(key, []); units.get(key).push({r, P:Q, c:s.c}); });
+    // a building outline is a piece of its own: a wall that blocks the cameras (or a plain outline, if the user said it is not a building)
+    const solid = solidSeg.has(s), rr2 = r === "wall" ? (solid ? "wallExt" : s.c ? "hard" : "wallExt") : r;
+    const ok = OK(s), key = solid || (r === "wall" && s.c) ? "s" + (nk++) : ok >= 0 ? "i" + ok : "l" + rr2; if (!units.has(key)) units.set(key, []); units.get(key).push({r:rr2, P:Q, c:s.c, solid}); });
   const shapes = [];
   const mk = list => { let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; list.forEach(u => { for (let k = 0; k + 1 < u.P.length; k += 2){ const x = u.P[k], y = u.P[k + 1]; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; } });
     if (x0 === Infinity) return; const dia = Math.max(x1 - x0, y1 - y0, .05), plant = list.some(u => u.r === "plant");
     let L = list.map(u => { let ex = 0; const b = bbox(u.P); if (b) ex = Math.max(b[2] - b[0], b[3] - b[1]); return {u, ex}; });
     if (plant && L.length > 4) L = L.filter(o => o.ex >= dia * .06);
-    let parts = L.map(({u}) => ({r:u.r, P:simp(u.P, Math.max(.01, dia * (plant ? .03 : .005))), c:u.c}));
+    let parts = L.map(({u}) => ({r:u.r, P:simp(u.P, u.r === "wallExt" || u.r === "hard" ? .005 : Math.max(.01, dia * (plant ? .03 : .005))), c:u.c}));
     if (plant){ const tot = parts.reduce((a, q) => a + q.P.length / 2, 0); if (tot > 160 && parts.length > 8){ parts.sort((a, b) => b.P.length - a.P.length); const k = Math.ceil(tot / 160); parts = parts.filter((_, i) => i % k === 0); } }
     const by = {}; parts.forEach(q => { const key = q.r === "water" && q.c ? "water:f" : q.r; let d = ""; for (let k = 0; k + 1 < q.P.length; k += 2) d += (k ? "L" : "M") + rr(q.P[k] - x0) + " " + rr(q.P[k + 1] - y0); if (q.c) d += "Z"; by[key] = (by[key] || "") + d; });
     const w = Math.max(.05, rr(x1 - x0)), h = Math.max(.05, rr(y1 - y0));
-    shapes.push({k:"lnd", x:rr(x0), y:rr(y0), w, h, w0:w, h0:h, rot:0, p:Object.entries(by)}); };
+    const o = {k:"lnd", x:rr(x0), y:rr(y0), w, h, w0:w, h0:h, rot:0, p:Object.entries(by)}; if (list.some(u => u.solid)) o.solid = true; shapes.push(o); };
   // loose lines of one role: pieces of what touches (a path edge, a curb run), never one piece across the whole site
   const touch = (L, gap) => { const B = L.map(u => bbox(u.P)), par = L.map((_, i) => i), find = i => { while (par[i] !== i) i = par[i] = par[par[i]]; return i; }, grid = new Map();
     B.forEach((b, i) => { for (let gx = Math.floor((b[0] - gap)); gx <= Math.floor((b[2] + gap)); gx++) for (let gy = Math.floor((b[1] - gap)); gy <= Math.floor((b[3] + gap)); gy++){ const k = gx + "," + gy; let a = grid.get(k); if (!a) grid.set(k, a = []);
@@ -421,11 +443,37 @@ function landscape(flat, opts){
   // writing: names of places and notes, each a label of its own (numbers alone, sizes and plant codes are left out)
   const labels = [];
   flat.texts.forEach(t => { if ((R[t.L] || "other") === "ignore" && !/lejant|legend|yazı|yazi|text|txt|not|note|label/i.test(t.L)) return; const s = String(t.s || "").replace(/\s+/g, " ").trim();
-    if (s.length < 3 || /^[\d\s.,:;+\-x×/%°'"()=]+$/.test(s) || /^[a-z]{1,3}\.[a-z]{1,3}/i.test(s) || (opts.skipText && opts.skipText(s))) return;
-    if (inside(t.x, t.y)) return; const q = M(t.x, t.y); if (box && (q[0] < box[0] || q[0] > box[2] || q[1] < box[1] || q[1] > box[3])) return;
+    if (s.length < 3 || /^[\d\s.,:;+\-x×/%°'"()=]+$/.test(s) || /^[a-z]{1,3}\.[a-z]{1,3}/i.test(s) || MEAS.test(s) || (opts.skipText && opts.skipText(s))) return;
+    if (solids.length && inside(t.x, t.y)) return; const q = M(t.x, t.y); if (box && (q[0] < box[0] || q[0] > box[2] || q[1] < box[1] || q[1] > box[3])) return;
     labels.push({x:rr(q[0]), y:rr(q[1]), text:s, h:t.h * (opts.scale || 1), rot:t.rot ? Math.round(-t.rot / D2R) : 0}); });
   return {shapes, labels};
 }
+/* One object of the drawing a piece belongs to: the outermost block reference around it that is small enough to be one thing
+   (a bed, a tree, a lamp) — a whole floor or site drawn as one block does not make one piece of everything. -1: loose line. */
+function objKey(flat, scale, maxM){ const BB = new Map(); flat.refs.forEach(r => { if (r.id !== undefined && r.bb) BB.set(r.id, r.bb); });
+  return s => { if (!s.ch) return -1; for (const id of s.ch){ const b = BB.get(id); if (b && Math.max(b[2] - b[0], b[3] - b[1]) * scale <= maxM) return id; } return -1; }; }
+/* ---------- floors over each other ---------- */
+// distance from a point to the nearest of many lines [[x1,y1,x2,y2] …] (metres), through 1 m cells
+function nearOf(S){ const G = new Map(); S.forEach((q, i) => { for (let gx = Math.floor(Math.min(q[0], q[2])); gx <= Math.floor(Math.max(q[0], q[2])); gx++) for (let gy = Math.floor(Math.min(q[1], q[3])); gy <= Math.floor(Math.max(q[1], q[3])); gy++){ const k = gx + "," + gy; (G.get(k) || G.set(k, []).get(k)).push(i); } });
+  return (x, y) => { let d = Infinity; for (let gx = Math.floor(x) - 1; gx <= Math.floor(x) + 1; gx++) for (let gy = Math.floor(y) - 1; gy <= Math.floor(y) + 1; gy++){ const a = G.get(gx + "," + gy); if (!a) continue;
+    for (const i of a){ const [x1, y1, x2, y2] = S[i], ex = x2 - x1, ey = y2 - y1, L2 = ex * ex + ey * ey || 1e-9, u = Math.max(0, Math.min(1, ((x - x1) * ex + (y - y1) * ey) / L2)); d = Math.min(d, Math.hypot(x - x1 - ex * u, y - y1 - ey * u)); } } return d; }; }
+// points every 50 cm along lines (at most ~800, spread evenly)
+function sampleOf(S){ const V = []; S.forEach(q => { const n = Math.max(1, Math.floor(Math.hypot(q[2] - q[0], q[3] - q[1]) / .5)); for (let i = 0; i <= n; i++) V.push(q[0] + (q[2] - q[0]) * i / n, q[1] + (q[3] - q[1]) * i / n); });
+  if (V.length <= 1600) return V; const k = Math.ceil(V.length / 1600), o = []; for (let i = 0; i < V.length; i += 2 * k) o.push(V[i], V[i + 1]); return o; }
+/* The shift that puts floor A's walls over floor B's (both in metres, y down): exterior walls, columns, shafts and stairs stand
+   over each other. Every shift over the two boxes is tried in 50 cm steps, the best ones refined to 2 cm. Returns {dx, dy, f}
+   (f: share of A's wall points lying within 25 cm of B's walls) or null when nothing lines up well enough. */
+function floorShift(A, B){
+  if (!A.length || !B.length) return null; const bA = bbox(A.flatMap(q => q)), bB = bbox(B.flatMap(q => q)), near = nearOf(B), V = sampleOf(A), n = V.length / 2;
+  const score = (dx, dy) => { let on = 0; for (let i = 0; i < V.length; i += 2) if (near(V[i] + dx, V[i + 1] + dy) < .25) on++; return on / n; };
+  const cost = (dx, dy) => { let c = 0; for (let i = 0; i < V.length; i += 2) c += Math.min(near(V[i] + dx, V[i + 1] + dy), .8); return c / n; };
+  const xs = [bB[0] - bA[0], bB[2] - bA[2]], ys = [bB[1] - bA[1], bB[3] - bA[3]], x0 = Math.min(...xs) - 2, x1 = Math.max(...xs) + 2, y0 = Math.min(...ys) - 2, y1 = Math.max(...ys) + 2;
+  const step = Math.max(.5, Math.sqrt((x1 - x0) * (y1 - y0) / 900)), G = [];
+  for (let dx = x0; dx <= x1; dx += step) for (let dy = y0; dy <= y1; dy += step) G.push([score(dx, dy), dx, dy]);
+  let best = null; G.sort((a, b) => b[0] - a[0]).slice(0, 6).forEach(([, dx, dy]) => { let bc = cost(dx, dy);
+    for (let r = step / 2; r >= .02; r /= 2) for (let again = true; again;){ again = false; for (const [ex, ey] of [[r, 0], [-r, 0], [0, r], [0, -r]]){ const c = cost(dx + ex, dy + ey); if (c < bc - 1e-9){ bc = c; dx += ex; dy += ey; again = true; } } }
+    const f = score(dx, dy); if (!best || f > best.f) best = {dx:Math.round(dx * 100) / 100, dy:Math.round(dy * 100) / 100, f}; });
+  return best && best.f >= .4 ? best : null; }
 // preview of the whole file: plain lines by role, plan groups outlined
 function preview(flat, roles, groups, maxW = 900){
   const segs = flat.segs.filter(s => roles[s.L] && roles[s.L] !== "ignore" && roles[s.L] !== "other"), bb = bbox(segs.flatMap(s => s.p.length > 40 ? [s.p[0], s.p[1], s.p[s.p.length - 2], s.p[s.p.length - 1]] : s.p));
@@ -437,6 +485,6 @@ function preview(flat, roles, groups, maxW = 900){
   return `<svg viewBox="-10 -24 ${(w * s + 20).toFixed(0)} ${(h * s + 34).toFixed(0)}" width="100%" style="background:#fff;border-radius:8px">${body}${G}</svg>`;
 }
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;"}[c]));
-return {lroleOf, siteFit, landscape, decode, parse, flatten, analyze, floors, build, preview, roleOf, kindOf, bbox, centerLines, mtext, UNITS};
+return {lroleOf, siteFit, landscape, wallOutlines, nearOf, floorShift, decode, parse, flatten, analyze, floors, build, preview, roleOf, kindOf, bbox, centerLines, mtext, UNITS};
 })();
 if (typeof module !== "undefined") module.exports = DXF;
